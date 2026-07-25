@@ -1,51 +1,39 @@
 import os
-from pathlib import Path
 import re
-from urllib import response
-from pypdf import PdfReader
+from pathlib import Path
+
 import chromadb
 import requests
 import streamlit as st
 from dotenv import load_dotenv
+from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 
-# Load .env
+# ======================================================
+# Load Environment Variables
+# ======================================================
+
 env_path = Path(__file__).parent / ".env"
-
-st.write("Current file:", __file__)
-st.write("Loading .env from:", env_path.resolve())
-
 load_dotenv(dotenv_path=env_path, override=True)
-
-st.write("Loading .env from:", env_path)
-st.write("Exists:", env_path.exists())
 
 try:
     OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"]
     OPENROUTER_MODEL = st.secrets["OPENROUTER_MODEL"]
-    st.write("Using Streamlit Secrets")
 except Exception:
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL")
-    st.write("Using .env")
 
-st.write("API key loaded:", OPENROUTER_API_KEY is not None)
-st.write("Model:", OPENROUTER_MODEL)
-
-if OPENROUTER_API_KEY:
-    st.write("Key starts with:", OPENROUTER_API_KEY[:15] + "...")
-else:
-    st.write("No API key found!")
-# -------------------------
-# Build ChromaDB if needed
-# -------------------------
+# ======================================================
+# Load Documents
+# ======================================================
 
 def load_documents(folder="documents"):
     text = ""
 
     for file in os.listdir(folder):
         if file.endswith(".pdf"):
-            reader = PdfReader(os.path.join(folder, file))
+            pdf_path = os.path.join(folder, file)
+            reader = PdfReader(pdf_path)
 
             for page in reader.pages:
                 page_text = page.extract_text()
@@ -56,10 +44,18 @@ def load_documents(folder="documents"):
     return text
 
 
+# ======================================================
+# Preprocessing
+# ======================================================
+
 def preprocess_text(text):
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
+
+# ======================================================
+# Chunking
+# ======================================================
 
 def chunk_text(text, chunk_size=500):
     chunks = []
@@ -69,22 +65,36 @@ def chunk_text(text, chunk_size=500):
 
     return chunks
 
+
+# ======================================================
+# Load Embedding Model
+# ======================================================
+
+model = SentenceTransformer("all-MiniLM-L6-v2")
+
+
+# ======================================================
+# Connect to ChromaDB
+# ======================================================
+
+client = chromadb.PersistentClient(path="chroma_db")
+
+
+# ======================================================
+# Build Chroma Database
+# ======================================================
+
 def build_database():
 
     documents = load_documents()
-
-    cleaned = preprocess_text(documents)
-
-    chunks = chunk_text(cleaned)
+    cleaned_text = preprocess_text(documents)
+    chunks = chunk_text(cleaned_text)
 
     embeddings = model.encode(chunks)
 
     collection = client.get_or_create_collection("rag_documents")
 
-    existing = collection.count()
-
-    if existing == 0:
-
+    if collection.count() == 0:
         collection.add(
             ids=[str(i) for i in range(len(chunks))],
             documents=chunks,
@@ -96,15 +106,17 @@ def build_database():
         )
 
     return collection
-# Load embedding model
-model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# Connect to ChromaDB
-client = chromadb.PersistentClient(path="chroma_db")
 
 collection = build_database()
 
+
+# ======================================================
+# Retrieve Relevant Context
+# ======================================================
+
 def retrieve_context(query, n_results=2):
+
     query_embedding = model.encode(query)
 
     results = collection.query(
@@ -114,6 +126,10 @@ def retrieve_context(query, n_results=2):
 
     return results
 
+
+# ======================================================
+# Ask OpenRouter LLM
+# ======================================================
 
 def ask_llm(question, context):
 
@@ -151,16 +167,21 @@ Answer:
     )
 
     if response.status_code != 200:
-       st.error(f"Status Code: {response.status_code}")
-       st.code(response.text)
-       return "OpenRouter request failed."
+        st.error("OpenRouter request failed.")
+        st.code(response.text)
+        return None
+
     return response.json()["choices"][0]["message"]["content"]
 
-# -------------------------
-# Streamlit UI
-# -------------------------
 
-st.set_page_config(page_title="Student RAG Assistant")
+# ======================================================
+# Streamlit Interface
+# ======================================================
+
+st.set_page_config(
+    page_title="Student RAG Assistant",
+    page_icon="📚"
+)
 
 st.title("📚 Student RAG Assistant")
 
@@ -168,7 +189,7 @@ question = st.text_input("Ask a question about your documents:")
 
 if st.button("Ask"):
 
-    if question:
+    if question.strip():
 
         with st.spinner("Searching documents..."):
 
@@ -178,11 +199,20 @@ if st.button("Ask"):
 
             answer = ask_llm(question, context)
 
-        st.subheader("Answer")
-
-        st.write(answer)
+        if answer:
+            st.subheader("Answer")
+            st.write(answer)
 
         st.subheader("Retrieved Sources")
 
-        for meta in results["metadatas"][0]:
-            st.write("📄", meta["source"])
+        shown_sources = set()
+
+        for metadata in results["metadatas"][0]:
+            source = metadata["source"]
+
+            if source not in shown_sources:
+                st.write(f"📄 {source}")
+                shown_sources.add(source)
+
+    else:
+        st.warning("Please enter a question.")
