@@ -8,11 +8,17 @@ from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 
 # Load .env
+# Load .env for local development
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL")
+# Use Streamlit Secrets when deployed, otherwise use .env locally
+try:
+    OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"]
+    OPENROUTER_MODEL = st.secrets["OPENROUTER_MODEL"]
+except Exception:
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL")
 
 # Load embedding model
 model = SentenceTransformer("all-MiniLM-L6-v2")
