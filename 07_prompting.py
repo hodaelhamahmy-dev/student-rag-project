@@ -26,29 +26,45 @@ client = chromadb.PersistentClient(path="chroma_db")
 collection = client.get_collection("rag_documents")
 
 
-def retrieve_context(query, n_results=2):
+def retrieve_context(query, n_results=2, max_distance=1.0, min_length=20):
     query_embedding = model.encode(query)
 
     results = collection.query(
         query_embeddings=[query_embedding.tolist()],
-        n_results=n_results
+        n_results=n_results,
+        include=["documents", "distances"]
     )
 
-    return "\n\n".join(results["documents"][0])
+    docs = results["documents"][0]
+    distances = results["distances"][0]
+
+    # Keep only chunks close enough to the query
+    filtered = [doc for doc, dist in zip(docs, distances) if dist <= max_distance]
+
+    if not filtered:
+        return None
+
+    context = "\n\n".join(filtered)
+
+    if len(context.strip()) < min_length:
+        return None
+
+    return context
 
 
 def ask_llm(question, context):
 
-    prompt = f"""
-Answer the question ONLY using the context below.
+    system_prompt = """You are a strict document-based Q&A assistant.
+You must answer ONLY using the provided context.
+Never use outside knowledge or make assumptions beyond the text.
+If the answer is not in the context, say exactly: "I cannot answer this from the provided document."
+"""
 
-Context:
+    user_prompt = f"""Context:
 {context}
 
 Question:
 {question}
-
-Answer:
 """
 
     headers = {
@@ -59,10 +75,8 @@ Answer:
     data = {
         "model": OPENROUTER_MODEL,
         "messages": [
-            {
-                "role": "user",
-                "content": prompt
-            }
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
         ]
     }
 
@@ -83,8 +97,10 @@ if __name__ == "__main__":
 
     context = retrieve_context(question)
 
-    answer = ask_llm(question, context)
-
-    print("\n" + "=" * 60)
-    print("Answer:\n")
-    print(answer)
+    if context is None:
+        print("\nI cannot answer this — no relevant content found in the document.")
+    else:
+        answer = ask_llm(question, context)
+        print("\n" + "=" * 60)
+        print("Answer:\n")
+        print(answer)
